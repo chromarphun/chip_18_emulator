@@ -7,9 +7,14 @@ use sdl2::keyboard::Keycode;
 use sdl2::rect::Rect;
 use std::time::Duration;
 use std::convert::TryInto;
- 
 
-fn decode_execute() {
+
+// extract the four nibbles for the two byte opcode
+fn decode(opcode1: u8, opcode2: u8) -> [u8; 4] {
+    [opcode1 >> 4, opcode1 & 15, opcode2 >> 4, opcode2 & 15]
+}
+
+fn execute() {
 
 
 }
@@ -44,9 +49,7 @@ fn main() -> io::Result<()> {
     let mut f = File::open("tests/exp")?;
     let mut pc = 0;
     let mut screen: [bool; 2048]=[false; 2048]; 
-    screen[514]=true;
     f.read(&mut memory)?;
-
     'running: loop {
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.clear();
