@@ -9,7 +9,10 @@ use std::io::prelude::*;
 use std::time::Duration;
 
 // extract the four nibbles for the two byte opcode
-fn decode(opcode1: u8, opcode2: u8) -> [u8; 4] {
+fn fetch_decode(memory: &[u8; 4096], pc: &mut u8) -> [u8; 4] {
+    let opcode1 = memory[*pc as usize];
+    let opcode2 = memory[(*pc + 1) as usize];
+    *pc += 2;
     [opcode1 >> 4, opcode1 & 15, opcode2 >> 4, opcode2 & 15]
 }
 
@@ -18,6 +21,7 @@ fn execute(
     memory: &mut [u8; 4096],
     registers: &mut [u8; 16],
     i: &mut u8,
+    pc: &mut u8,
     screen: &mut [bool; 2048],
 ) {
     match codes[0] {
@@ -25,18 +29,31 @@ fn execute(
             *memory = [0; 4096];
         }
         0x1 => *pc = (codes[1] << 8) + (codes[2] << 4) + (codes[3]),
-        0x6 => registers[codes[1]] = (codes[2] << 4) + (codes[3]),
-        0x7 => registers[codes[1]] = registers[codes[1]] + (codes[2] << 4) + (codes[3]),
+        0x6 => registers[codes[1] as usize] = (codes[2] << 4) + (codes[3]),
+        0x7 => {
+            registers[codes[1] as usize] =
+                registers[codes[1] as usize] + (codes[2] << 4) + (codes[3])
+        }
         0xA => *i = (codes[1] << 8) + (codes[2] << 4) + (codes[3]),
         0xD => {
-            let x = registers[code[1]] % 63;
-            let y = registers[code[2]] % 31;
-            let draw = memory[*i];
-            for k in 0..code[3] {
-                let counter = 0;
-                while x <= 63 {}
+            let mut x = registers[codes[1] as usize] % 63;
+            let mut y = registers[codes[2] as usize] % 31;
+            let mut draw = memory[*i as usize];
+            for k in 0..codes[3] {
+                let mut counter = 0;
+                while x <= 63 && counter <= 8 {
+                    if draw & 1 == 1 {
+                        let screen_val: usize = (32 * x + y).try_into().unwrap();
+                        screen[screen_val] = !screen[screen_val];
+                    }
+                    x += 1;
+                    counter += 1;
+                    draw >>= 1;
+                }
+                x -= counter;
             }
         }
+        _ => {}
     }
 }
 
@@ -68,7 +85,7 @@ fn main() -> io::Result<()> {
     let mut stack = vec![0; 0];
     let mut memory: [u8; 4096] = [0; 4096];
     let mut registers: [u8; 16] = [0; 16];
-    let mut f = File::open("tests/exp")?;
+    let mut f = File::open("tests/IBM Logo.ch8")?;
     let mut pc: u8 = 0;
     let mut screen: [bool; 2048] = [false; 2048];
     f.read(&mut memory)?;
@@ -76,6 +93,15 @@ fn main() -> io::Result<()> {
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.clear();
         canvas.set_draw_color(Color::RGB(255, 255, 255));
+        let codes = fetch_decode(&mut memory, &mut pc);
+        execute(
+            &codes,
+            &mut memory,
+            &mut registers,
+            &mut i,
+            &mut pc,
+            &mut screen,
+        );
         for x in 0..63u32 {
             for y in 0..31u32 {
                 let screen_val: usize = (x * 32 + y).try_into().unwrap();
