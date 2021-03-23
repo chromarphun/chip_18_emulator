@@ -1,3 +1,4 @@
+use rand::Rng;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
@@ -6,7 +7,10 @@ use std::convert::TryInto;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 // extract the four nibbles for the two byte opcode
 fn fetch_decode(memory: &[u8; 4096], pc: &mut u16) -> [u16; 4] {
@@ -23,37 +27,38 @@ fn execute(
     i: &mut u16,
     pc: &mut u16,
     screen: &mut [bool; 2048],
+    stack: &mut Vec<u16>,
 ) {
     match codes[0] {
         0x0 => {
             if codes[1] == 0 && codes[2] == 0xE && codes[3] == 0 {
                 *screen = [false; 2048];
             } else if codes[1] == 0 && codes[2] == 0xE && codes[3] == 0xE {
-                *pc = stack.pop();
+                *pc = stack.pop().unwrap();
             }
         }
         0x1 => *pc = (codes[1] << 8) + (codes[2] << 4) + (codes[3]),
         0x2 => {
-            vec.push(*pc);
+            stack.push(*pc);
             *pc = (codes[1] << 8) + (codes[2] << 4) + (codes[3]);
         }
         0x3 => {
-            x_val = registers[codes[1] as usize];
-            nn_val = (codes[2] << 4) + (codes[3]);
+            let x_val = registers[codes[1] as usize];
+            let nn_val = (codes[2] << 4) + (codes[3]);
             if x_val == nn_val {
                 *pc += 2;
             }
         }
         0x4 => {
-            x_val = registers[codes[1] as usize];
-            nn_val = (codes[2] << 4) + (codes[3]);
+            let x_val = registers[codes[1] as usize];
+            let nn_val = (codes[2] << 4) + (codes[3]);
             if x_val != nn_val {
                 *pc += 2;
             }
         }
         0x5 => {
-            x_val = registers[codes[1] as usize];
-            y_val = registers[codes[2] as usize];
+            let x_val = registers[codes[1] as usize];
+            let y_val = registers[codes[2] as usize];
             if x_val == y_val {
                 *pc += 2;
             }
@@ -64,19 +69,38 @@ fn execute(
                 registers[codes[1] as usize] + (codes[2] << 4) + (codes[3])
         }
         0x8 => match codes[3] {
-            0x0 => registers[codes[1] as usize] = registers[code[2] as usize],
-            0x1 => registers[codes[1] as usize] |= registers[code[2] as usize],
-            0x2 => registers[codes[1] as usize] &= registers[code[2] as usize],
-            0x3 => registers[codes[1] as usize] ^= registers[code[2] as usize],
+            0x0 => registers[codes[1] as usize] = registers[codes[2] as usize],
+            0x1 => registers[codes[1] as usize] |= registers[codes[2] as usize],
+            0x2 => registers[codes[1] as usize] &= registers[codes[2] as usize],
+            0x3 => registers[codes[1] as usize] ^= registers[codes[2] as usize],
+            0x4 => registers[codes[1] as usize] += registers[codes[2] as usize],
+            0x5 => registers[codes[1] as usize] -= registers[codes[2] as usize],
+            0x6 => {
+                registers[codes[1] as usize] = registers[codes[2] as usize] >> 1;
+            }
+            0x7 => {
+                registers[codes[1] as usize] =
+                    registers[codes[2] as usize] - registers[codes[1] as usize]
+            }
+            0xE => {
+                registers[codes[1] as usize] = registers[codes[2] as usize] << 1;
+            }
+            _ => {}
         },
         0x9 => {
-            x_val = registers[codes[1] as usize];
-            y_val = registers[codes[2] as usize];
+            let x_val = registers[codes[1] as usize];
+            let y_val = registers[codes[2] as usize];
             if x_val != y_val {
                 *pc += 2;
             }
         }
         0xA => *i = (codes[1] << 8) + (codes[2] << 4) + (codes[3]),
+        0xB => *pc = (codes[1] << 8) + (codes[2] << 4) + (codes[3]) + registers[0],
+        0xC => {
+            let mut rng = rand::thread_rng();
+            let r_val = rng.gen_range(0..255);
+            registers[codes[1] as usize] = r_val & (codes[2] << 4) + (codes[3]);
+        }
         0xD => {
             // println!("i is pointing at {}", memory[*i as usize]);
             let mut x = registers[codes[1] as usize] % 64;
@@ -96,6 +120,11 @@ fn execute(
                 i_val += 1;
                 x -= counter;
                 y += 1;
+            }
+        }
+        0xE => {
+            if codes[2] == 0x9 && codes[3] == 0xE {
+            } else if codes[2] == 0xA && codes[3] == 0x1 {
             }
         }
         _ => {}
@@ -134,13 +163,22 @@ fn main() -> io::Result<()> {
     let mut pc: u16 = 0;
     let mut screen: [bool; 2048] = [false; 2048];
     f.read(&mut memory[512..4096])?;
+
+    let cps = 60;
+    let frame_length = 1000000000 / cps;
+    let c_mut = Arc::new(Mutex::new(60));
+    let count = Arc::clone(&c_mut);
+
+    thread::spawn(move || loop {
+        let now = Instant::now();
+        {
+            let mut c = count.lock().unwrap();
+            *c -= 1;
+        }
+        while (now.elapsed().as_nanos()) < frame_length {}
+    });
     'running: loop {
-        canvas.set_draw_color(Color::RGB(0, 0, 0));
-        canvas.clear();
-        canvas.set_draw_color(Color::RGB(255, 255, 255));
         let codes = fetch_decode(&mut memory, &mut pc);
-        // println!("{:?}", codes);
-        // println!("pc: {}", pc);
         execute(
             &codes,
             &mut memory,
@@ -148,14 +186,21 @@ fn main() -> io::Result<()> {
             &mut i,
             &mut pc,
             &mut screen,
+            &mut stack,
         );
-        for y in 0..32u32 {
-            for x in 0..64u32 {
-                let screen_val: usize = (y * 64 + x).try_into().unwrap();
-                if screen[screen_val] {
-                    let x_corner: i32 = (PADDING + BOX_SIZE * x).try_into().unwrap();
-                    let y_corner: i32 = (PADDING + BOX_SIZE * y).try_into().unwrap();
-                    canvas.fill_rect(Rect::new(x_corner, y_corner, BOX_SIZE, BOX_SIZE));
+
+        if codes[0] == 0xD {
+            canvas.set_draw_color(Color::RGB(0, 0, 0));
+            canvas.clear();
+            canvas.set_draw_color(Color::RGB(255, 255, 255));
+            for y in 0..32u32 {
+                for x in 0..64u32 {
+                    let screen_val: usize = (y * 64 + x).try_into().unwrap();
+                    if screen[screen_val] {
+                        let x_corner: i32 = (PADDING + BOX_SIZE * x).try_into().unwrap();
+                        let y_corner: i32 = (PADDING + BOX_SIZE * y).try_into().unwrap();
+                        canvas.fill_rect(Rect::new(x_corner, y_corner, BOX_SIZE, BOX_SIZE));
+                    }
                 }
             }
         }
@@ -166,6 +211,7 @@ fn main() -> io::Result<()> {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                Event::KeyDown { keycode, .. } => println!("{}", keycode.unwrap()),
                 _ => {}
             }
         }
