@@ -37,7 +37,8 @@ fn main() -> io::Result<()> {
     let mut screen = [false; 2048];
     let cps = 700;
     let frame_length = 1000000000 / cps;
-    let mut em = emulator::Emulator::new("tests/test_opcode.ch8");
+    let mut em = emulator::Emulator::new();
+    em.load_memory("tests/man_test.ch8");
     em.init();
     'running: loop {
         let now = Instant::now();

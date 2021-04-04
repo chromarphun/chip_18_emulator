@@ -25,8 +25,7 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    pub fn new(path: &str) -> Emulator {
-        let mut f = File::open(path).expect("File problem!");
+    pub fn new() -> Emulator {
         let keymap: [String; 16] = [
             "X".to_string(),
             "1".to_string(),
@@ -70,7 +69,7 @@ impl Emulator {
         let c_mut = Arc::new(Mutex::new(60u8));
         let init = false;
         let draw = false;
-        f.read(&mut memory[512..4096]).expect("Read issue!");
+
         Self::load_fonts(&mut memory);
         Emulator {
             memory,
@@ -84,6 +83,10 @@ impl Emulator {
             init,
             draw,
         }
+    }
+    pub fn load_memory(&mut self, path: &str) {
+        let mut f = File::open(path).expect("File problem!");
+        f.read(&mut self.memory[512..4096]).expect("Read issue!");
     }
     pub fn init(&mut self) {
         let t_cps = 60;
@@ -108,8 +111,21 @@ impl Emulator {
         screen: &mut [bool; 2048],
     ) -> bool {
         let codes = self.fetch_decode();
-        println!("{:?}, {:x}, ({:x})", codes, self.pc - 2, self.pc - 514);
+        println!(
+            "Code: {:x}{:x}{:x}{:x}, PC: {:x}, (From file: {:x})",
+            codes[0],
+            codes[1],
+            codes[2],
+            codes[3],
+            self.pc - 2,
+            self.pc - 514
+        );
         self.execute(codes, event_pump, screen);
+        println!(
+            "PC: {:x}, registers: {:?}, i: {:x}\n",
+            self.pc, self.registers, self.i
+        );
+
         self.draw
     }
 
@@ -173,6 +189,7 @@ impl Emulator {
                 0x3 => self.registers[codes[1] as usize] ^= self.registers[codes[2] as usize],
                 0x4 => {
                     let old_val = self.registers[codes[1] as usize];
+                    self.registers[0xF] = 0;
                     self.registers[codes[1] as usize] = self.registers[codes[1] as usize]
                         .wrapping_add(self.registers[codes[2] as usize]);
                     if old_val > self.registers[codes[1] as usize] {
@@ -181,7 +198,7 @@ impl Emulator {
                 }
                 0x5 => {
                     self.registers[0xF] = 0;
-                    if self.registers[codes[1] as usize] < self.registers[codes[2] as usize] {
+                    if self.registers[codes[1] as usize] > self.registers[codes[2] as usize] {
                         self.registers[0xF] = 1;
                     }
                     self.registers[codes[1] as usize] = self.registers[codes[1] as usize]
@@ -196,15 +213,15 @@ impl Emulator {
                 }
                 0x7 => {
                     self.registers[0xF] = 0;
-                    if self.registers[codes[2] as usize] < self.registers[codes[1] as usize] {
+                    if self.registers[codes[2] as usize] > self.registers[codes[1] as usize] {
                         self.registers[0xF] = 1;
                     }
-                    self.registers[codes[1] as usize] =
-                        self.registers[codes[2] as usize] - self.registers[codes[1] as usize]
+                    self.registers[codes[1] as usize] = self.registers[codes[2] as usize]
+                        .wrapping_sub(self.registers[codes[1] as usize]);
                 }
                 0xE => {
                     self.registers[0xF] = 0;
-                    if ((self.registers[codes[2] as usize] & 64) >> 7) & 1 == 1 {
+                    if ((self.registers[codes[2] as usize]) >> 7) & 1 == 1 {
                         self.registers[0xF] = 1;
                     }
                     self.registers[codes[1] as usize] = self.registers[codes[2] as usize] << 1;
@@ -225,18 +242,19 @@ impl Emulator {
             0xC => {
                 let mut rng = rand::thread_rng();
                 let r_val = rng.gen_range(0..255);
-                self.registers[codes[1] as usize] = (r_val & (codes[2] << 4) + (codes[3])) as u8;
+                self.registers[codes[1] as usize] = (r_val & ((codes[2] << 4) + (codes[3]))) as u8;
             }
             0xD => {
                 self.draw = true;
                 let mut x: usize = (self.registers[codes[1] as usize] % 64) as usize;
                 let mut y: usize = (self.registers[codes[2] as usize] % 32) as usize;
                 let mut i_val = self.i;
+                self.registers[0xF] = 0;
                 for _ in 0..codes[3] {
                     let draw = self.memory[i_val as usize];
                     let mut counter = 0;
-                    while x <= 63 && counter <= 7 {
-                        if draw >> (7 - counter) & 1 == 1 {
+                    while x <= 63 && counter <= 7 && y <= 31 {
+                        if ((draw >> (7 - counter)) & 1) == 1 {
                             let screen_val: usize = 64 * y + x;
                             if screen[screen_val] {
                                 self.registers[0xF] = 1;
@@ -256,7 +274,10 @@ impl Emulator {
                 for event in (*event_pump).poll_iter() {
                     match event {
                         Event::KeyDown { scancode, .. }
-                            if scancode == Scancode::from_name(&self.keymap[codes[1] as usize]) =>
+                            if scancode
+                                == Scancode::from_name(
+                                    &self.keymap[self.registers[codes[1] as usize] as usize],
+                                ) =>
                         {
                             if codes[2] == 0x9 && codes[3] == 0xE {
                                 self.pc += 2;
@@ -342,5 +363,31 @@ impl Emulator {
         for (i, x) in font_data.iter().enumerate() {
             memory[i] = *x;
         }
+    }
+}
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn op_code_test() {
+        let mut em = Emulator::new();
+        em.registers[0] = 0;
+        em.registers[1] = 0;
+        em.memory[512] = 0xf4;
+        em.memory[513] = 0x65;
+        em.i = 0x400;
+        em.memory[0x400] = 0x15;
+        em.memory[0x401] = 0x16;
+        em.memory[0x402] = 0x17;
+        em.memory[0x403] = 0x18;
+        em.memory[0x404] = 0x19;
+        em.memory[0x405] = 0x20;
+        let mut screen = [false; 2048];
+        let sdl_context = sdl2::init().unwrap();
+        let mut event_pump = sdl_context.event_pump().unwrap();
+        em.next_frame(&mut event_pump, &mut screen);
+        assert_eq!(em.registers[4], 0x19);
+        assert_eq!(em.registers[5], 0x0);
     }
 }
